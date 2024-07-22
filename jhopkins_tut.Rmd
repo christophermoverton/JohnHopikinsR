@@ -1,0 +1,321 @@
+---
+title: "Jhopkins_proj"
+author: "anon"
+date: "2024-07-09"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+The COVID-19 pandemic has profoundly impacted public health across the United States, leading to significant variations in infection and mortality rates among different states. This analysis seeks to understand these variations by examining the relationship between the number of COVID-19 cases per thousand people and the number of deaths per thousand people across various states. By leveraging data from the John Hopkins COVID-19 dataset, we aim to identify patterns and draw insights that can help improve future public health responses.
+
+#### Question of Intent
+
+How effective are different US states' COVID-19 responses in mitigating deaths, considering the cases per thousand and deaths per thousand metrics?
+
+## Load Library
+
+Let's load the tidyverse package
+
+```{r load_library}
+library(tidyverse)
+```
+
+## Load Data
+
+Loading data from John Hopikins Covid-19 Dataset on Github:
+
+```{r dataset_load, echo=FALSE}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+ file_names <- c("time_series_covid19_confirmed_US.csv",  "time_series_covid19_confirmed_global.csv", "time_series_covid19_deaths_US.csv",  "time_series_covid19_deaths_global.csv")
+ urls <- str_c(url_in,file_names)
+ global_cases <- read_csv(urls[2])
+ global_deaths <- read_csv(urls[4])
+ us_cases <- read_csv(urls[1])
+ us_deaths <- read_csv(urls[3])
+ 
+```
+
+## Cleaning Data
+
+Let's tidy up the data, and put each variable in their own column
+
+```{r tidy_global_data}
+library(lubridate)
+global_cases1 <- global_cases %>% pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat,Long),
+                                              names_to = "date",
+                                              values_to = "cases") %>%
+  select(-c(Lat,Long))
+
+global_deaths1 <- global_deaths %>% pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat,Long),
+                                              names_to = "date",
+                                              values_to = "deaths") %>%
+  select(-c(Lat,Long))
+
+global <- global_cases1 %>% 
+  full_join(global_deaths1) %>% 
+  rename(Country_Region = `Country/Region`,
+         Province_State = `Province/State`) %>% 
+  mutate(mdy(date))
+global <- global %>% filter(cases > 0)
+summary(global)
+```
+
+Let's work on tidying up US cases
+
+```{r tidy_us_cases}
+us_cases1 <- us_cases %>% pivot_longer(cols = -(UID:Combined_Key),
+                          names_to = "date",
+                          values_to = "cases") %>%
+  select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat,Long_))
+  
+us_deaths1 <- us_deaths %>% pivot_longer(cols = -(UID:Population),
+                          names_to = "date",
+                          values_to = "deaths") %>%
+  select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>%
+  select(-c(Lat,Long_))
+
+US <- us_cases1 %>% full_join(us_deaths1)
+  
+```
+
+Let's combine global country and province/state into a combined key
+
+```{r}
+global1 <- global %>% unite("Combined_Key",
+                            c(Province_State,Country_Region),
+                            sep = ", ",
+                            na.rm = TRUE,
+                            remove = FALSE)
+```
+
+Need population data
+
+```{r}
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>% select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+global2 <- global1 %>% left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  select(-c(UID,FIPS)) %>%
+  select(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key)
+```
+
+Lets organize the data further so that we have US_by_State data
+
+```{r us_by_state}
+US_by_state <- US %>%
+  group_by(Province_State, Country_Region, date) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000/Population) %>%
+  select(Province_State, Country_Region,date,cases,deaths, deaths_per_mill,Population) %>%
+  ungroup()
+```
+
+Let's further find US_totals
+
+```{r us_totals}
+US_totals <- US_by_state %>%
+  group_by(Country_Region, date) %>%
+  summarise(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000/Population) %>%
+  select(Country_Region,date,cases,deaths, deaths_per_mill,Population) %>%
+  ungroup()
+```
+
+## Plot the Data
+
+Let's Plot the US deaths data
+
+#### US Total Cases and Deaths Over Time
+
+The plot showing the total cases and deaths over time for the US reveals several key insights:
+
+-   **Exponential Growth**: Both cases and deaths exhibit an exponential growth pattern, especially in the initial stages of the pandemic. This indicates a rapid spread of the virus and increasing mortality rates.
+-   **Peaks and Valleys**: There are distinct peaks and valleys in the data, corresponding to waves of infections and subsequent reductions. These waves reflect the impact of various public health measures, seasonal changes, and possibly the emergence of new variants.
+-   **Deaths Lag Behind Cases**: Deaths tend to lag behind cases, which is expected because there is a delay between infection and death. This lag is a critical consideration for health policy planning.
+
+```{r plot}
+US_totals %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) + 
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title= "COVID19 in the US", y = NULL)
+```
+
+#### State-Level Analysis (New York Example)
+
+The state-level plot for New York shows:
+
+-   **Severe Early Impact**: New York experienced a significant early impact with a steep rise in both cases and deaths, reflecting the severe outbreak in the state in the early months of the pandemic.
+-   **Subsequent Control**: After the initial surge, the state managed to flatten the curve, as evidenced by the slower increase in cases and deaths. This reflects the effectiveness of strict public health measures and lockdowns.
+-   **Continued Fluctuations**: Despite overall control, there are still fluctuations in cases and deaths, indicating ongoing challenges in completely curbing the virus spread.
+
+```{r plot_state}
+state <- "New York"
+US_by_state %>%
+  filter(Province_State == state) %>%
+  filter(cases > 0) %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) + 
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title= "COVID19 in the New York", y = NULL)  
+```
+
+Let's look a new cases and new deaths using lag function for US_totals and US_by_state
+
+```{r new_cases}
+US_by_state <- US_by_state %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+US_totals <- US_totals %>%
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+```
+
+#### New Cases and Deaths Over Time
+
+The plot of new cases and new deaths over time provides additional insights:
+
+-   **Initial Surges**: Early in the pandemic, there are sharp increases in new cases and deaths, reflecting the initial outbreaks and the time it took for public health measures to take effect.
+-   **Subsequent Waves**: Multiple waves of new cases and deaths can be observed, indicating the cyclical nature of the pandemic and the influence of factors such as reopening policies, public compliance with health measures, and vaccination campaigns.
+-   **Reduction in New Deaths**: In some later waves, the increase in new deaths is less pronounced compared to new cases. This might suggest improvements in treatment, the protective effect of vaccinations, or better healthcare system responses.
+
+Let's Graph new cases and deaths
+
+```{r new_cases_deaths_US_totals}
+US_totals %>%
+  filter(new_cases > 0) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) + 
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title= "New COVID19 Cases and new COVID19 Deaths in the US", y = NULL)
+```
+
+Let's look at new cases and deaths in New York
+
+```{r new_cases_deaths_US_by_state}
+US_by_state %>%
+  filter(Province_State == state) %>%
+  filter(new_cases > 0) %>%
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) + 
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title= str_c("New COVID19 Cases and new COVID19 Deaths in ", state), y = NULL)
+```
+
+Let's do analysis at a state by state level
+
+```{r state_by_state}
+us_state_totals <- US_by_state %>%
+  group_by(Province_State) %>%
+  summarise(cases = max(cases), deaths = max(deaths),
+            Population = max(Population),
+            cases_per_thous = cases*1000/Population,
+            deaths_per_thous = deaths*1000/Population) %>%
+  filter(cases > 0, Population > 0)
+```
+
+Let's slice this for best (minimum number of deaths per thousand)
+
+```{r slice_example}
+us_state_totals %>%
+  slice_min(deaths_per_thous, n = 10) %>%
+  select(cases_per_thous,deaths_per_thous, everything())
+
+```
+
+Let's slice this for the worst deaths per thousand
+
+```{r slice_max}
+us_state_totals %>%
+  slice_max(deaths_per_thous, n = 10) %>%
+  select(cases_per_thous,deaths_per_thous, everything())
+```
+
+## Model the Data
+
+Let's at a linear model example below
+
+```{r linear_model}
+mod <- lm(deaths_per_thous ~ cases_per_thous, data= us_state_totals)
+summary(mod)
+```
+
+Let's do a quick slice between min/max of cases per thousand
+
+```{r}
+us_state_totals %>% slice_min(cases_per_thous)
+us_state_totals %>% slice_max(cases_per_thous)
+```
+
+Let's add prediction data based upon the model
+
+```{r add_prediction}
+us_tot_w_pred <-us_state_totals %>% mutate(pred = predict(mod))
+us_tot_w_pred
+```
+
+## Plot of the Model Data
+
+#### Predicted vs Actual Deaths per Thousand
+
+The scatter plot comparing predicted and actual deaths per thousand provides insights into the accuracy of the linear model used:
+
+-   **Correlation**: A positive correlation between cases per thousand and deaths per thousand is evident, validating the model's assumption that higher case rates generally lead to higher death rates.
+-   **Model Accuracy**: The proximity of the predicted values (red points) to the actual values (blue points) suggests that the model reasonably captures the relationship between cases and deaths. However, there are discrepancies, indicating areas where the model could be improved.
+-   **Outliers**: Some states are outliers with higher or lower deaths than predicted by the model, which could be due to unique factors such as healthcare quality, demographic differences, or specific public health interventions.
+
+Let's plot prediction data versus real data
+
+```{r prediction plot}
+us_tot_w_pred %>% ggplot()+
+  geom_point(aes(x=cases_per_thous, y=deaths_per_thous), color= "blue")+
+  geom_point(aes(x=cases_per_thous, y=pred), color="red")
+```
+
+## Bias Section
+
+It is important to acknowledge potential biases in the data and analysis:
+
+1.  **Reporting Bias**: Differences in how states report COVID-19 cases and deaths can affect the data. Some states might have more rigorous reporting standards, while others may underreport cases or deaths.
+
+2.  **Data Completeness**: The completeness of the dataset can vary, with some states potentially having more comprehensive records than others.
+
+3.  **Population Demographics**: Differences in demographics such as age, underlying health conditions, and population density can affect the death rates independently of the number of cases.
+
+4.  **Healthcare Capacity**: Variations in healthcare capacity and quality across states can influence the outcomes for COVID-19 patients, affecting the death rates.
+
+5.  **Policy Measures**: Different states implemented varying levels of restrictions, mask mandates, and vaccination campaigns, which could impact the spread and severity of the disease.
+
+## Conclusion
+
+This analysis provides insights into the effectiveness of different states' COVID-19 responses. The linear model suggests a significant relationship between cases per thousand and deaths per thousand, indicating that higher case rates generally lead to higher death rates. However, the effectiveness of interventions can vary significantly by state. By understanding these dynamics, policymakers can better target their efforts to reduce mortality rates in future health crises.
